@@ -180,17 +180,11 @@ func main() {
 
 		// 4. Expose endpoint for checking if tracks audio exist
 		se.Router.GET("/api/check-tracks", func(e *core.RequestEvent) error {
-			var payload struct{
-				TrackIDs []string `json:"track_ids"`
-			}
-			if err := e.BindBody(&payload); err != nil {
-				return e.JSON(http.StatusBadRequest, map[string]string{
-					"error": "Invalid request body: " + err.Error(),
-				})
-			}
+			trackIdsQuery := e.Request.URL.Query().Get("ids")
+			trackIds := strings.Split(trackIdsQuery, ",")
 
 			// Fetch tracks
-			tracks, err := app.FindRecordsByIds("tracks", payload.TrackIDs)
+			tracks, err := app.FindRecordsByIds("tracks", trackIds)
 			if err != nil {
 				return e.JSON(http.StatusBadRequest, map[string]string{
 					"error": "Failed to retrieve tracks: " + err.Error(),
@@ -199,7 +193,7 @@ func main() {
 
 			// Map tracks to id <-> audio_exists
 			mappedTracks := make(map[string]bool)
-			for _, id := range payload.TrackIDs {
+			for _, id := range trackIds {
 					mappedTracks[id] = false // default
 			}
 
