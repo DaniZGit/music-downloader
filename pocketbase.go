@@ -62,7 +62,7 @@ func main() {
 				0,
 			)
 			if err != nil {
-				log.Println("Could not fetch queue:", err)
+				// No rows returned
 				return
 			}
 
