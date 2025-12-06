@@ -179,7 +179,7 @@ func main() {
 		})
 
 		// 4. Expose endpoint for checking if tracks audio exist
-		se.Router.POST("/api/check-tracks", func(e *core.RequestEvent) error {
+		se.Router.GET("/api/check-tracks", func(e *core.RequestEvent) error {
 			var payload struct{
 				TrackIDs []string `json:"track_ids"`
 			}
