@@ -45,38 +45,50 @@ type SpotifyTrack struct {
 	} `json:"album"`
 }
 
-// ======================================================================
-// MAIN HANDLER ENTRY
-// ======================================================================
-
-func HandleDownload(app core.App, payload DownloadRequest) (*core.Record, error) {
+func QueueTrack(app core.App, payload DownloadRequest) (*core.Record, error) {
 	if payload.SpotifyTrackID == "" {
 		return nil, errors.New("spotify_track_id is required")
 	}
 
-	// -----------------------------------------------------
-	// 0) Check if track has already been downloaded
-	// -----------------------------------------------------
+	// Check if track already exists - so we dont create duplicate requests
 	_, err := app.FindFirstRecordByData("tracks", "spotify_track_id", payload.SpotifyTrackID)
 	if err == nil {
 		return nil, errors.New("track with provided spotify_track_id is already downloaded and ready to play")
 	}
 
-	// -----------------------------------------------------
-	// 1) GET TRACK METADATA FROM SPOTIFY
-	// -----------------------------------------------------
-
-	track, err := fetchSpotifyMetadata(payload.SpotifyTrackID)
+	// Get track metadata from Spotify
+	spotifyTrack, err := fetchSpotifyMetadata(payload.SpotifyTrackID)
 	if err != nil {
 		return nil, fmt.Errorf("spotify metadata error: %w", err)
 	}
 
-	fmt.Printf("Fetched from Spotify: %s - %s\n", track.Name, track.Album.Name)
+	fmt.Printf("Fetched from Spotify: %s - %s\n", spotifyTrack.Name, spotifyTrack.Album.Name)
 
-	// -----------------------------------------------------
-	// 2) DOWNLOAD FROM YOUTUBE
-	// -----------------------------------------------------
+	// Create track record
+	track, err := saveTrackRecord(app, spotifyTrack)
+	if err != nil {
+		return nil, fmt.Errorf("track save error: %w", err)
+	}
 
+	// Create queued_track record
+	queuedTrack, err := saveQueuedTrackRecord(app, track)
+	if err != nil {
+		return nil, fmt.Errorf("queued track save error: %w", err)
+	}
+
+	return queuedTrack, nil
+}
+
+// ======================================================================
+// MAIN HANDLER ENTRY
+// ======================================================================
+func DownloadTrack(app core.App, track *core.Record) (*core.Record, error) {
+	// Make sure track is not nil
+	if track == nil {
+			return nil, errors.New("track record is nil")
+	}
+
+	// Download from youtube
 	downloadDir := "./downloads"
 	os.MkdirAll(downloadDir, os.ModePerm)
 
@@ -91,19 +103,13 @@ func HandleDownload(app core.App, payload DownloadRequest) (*core.Record, error)
 		return nil, fmt.Errorf("yt-dlp failed: %w", err)
 	}
 
-	// -----------------------------------------------------
-	// 3) APPLY ID3 TAGS
-	// -----------------------------------------------------
-
+	// Apply ID3 tags
 	if err := writeID3Tags(track, tmpFile, fileID, downloadDir); err != nil {
 		return nil, err
 	}
 
-	// -----------------------------------------------------
-	// 4) UPLOAD TO POCKETBASE (CLOUDFLARE R2)
-	// -----------------------------------------------------
-
-	record, err := saveTrackRecord(app, track, tmpFile)
+	// Update record and save file to R2
+	record, err := updateTrackRecord(app, track, tmpFile)
 	if err != nil {
 		return nil, fmt.Errorf("record save error: %w", err)
 	}
@@ -164,9 +170,6 @@ func getSpotifyToken() (string, error) {
 	req.Header.Set("Authorization", "Basic "+auth)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	fmt.Println("POST body:", reqData.Encode())
-	fmt.Println("Headers:", req.Header)
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err
@@ -185,10 +188,10 @@ func getSpotifyToken() (string, error) {
 //  YT-DLP COMMAND
 // ======================================================================
 
-func createYTDLPCommand(track *SpotifyTrack, tmpFile string) *exec.Cmd {
-	search := fmt.Sprintf("%s %s", cleanTrackName(track.Name), track.Artists[0].Name)
+func createYTDLPCommand(track *core.Record, tmpFile string) *exec.Cmd {
+	search := fmt.Sprintf("%s %s", cleanTrackName(track.GetString("name")), track.GetString("artist"))
 
-	desired := track.DurationMs / 1000
+	desired := track.GetInt("duration") / 1000
 	min := desired - 5
 	max := desired + 5
 
@@ -217,7 +220,7 @@ func cleanTrackName(n string) string {
 //  ID3 TAG WRITING
 // ======================================================================
 
-func writeID3Tags(track *SpotifyTrack, tmpFile, fileID, dir string) error {
+func writeID3Tags(track *core.Record, tmpFile, fileID, dir string) error {
 	tag, err := id3v2.Open(tmpFile, id3v2.Options{Parse: true})
 	if err != nil {
 		return fmt.Errorf("id3 open error: %w", err)
@@ -225,22 +228,17 @@ func writeID3Tags(track *SpotifyTrack, tmpFile, fileID, dir string) error {
 	defer tag.Close()
 
 	tag.SetVersion(3)
-	tag.SetTitle(track.Name)
+	tag.SetTitle(track.GetString("name"))
 
-	artists := []string{}
-	for _, a := range track.Artists {
-		artists = append(artists, a.Name)
-	}
-	tag.SetArtist(strings.Join(artists, ", "))
-	tag.SetAlbum(track.Album.Name)
+	tag.SetArtist(track.GetString("artist"))
+	tag.SetAlbum(track.GetString("album"))
 
-	tag.AddTextFrame(tag.CommonID("TRCK"), tag.DefaultEncoding(), strconv.Itoa(track.TrackNumber))
-	tag.AddTextFrame(tag.CommonID("TPOS"), tag.DefaultEncoding(), strconv.Itoa(track.DiscNumber))
-	tag.AddTextFrame(tag.CommonID("TDRC"), tag.DefaultEncoding(), track.Album.ReleaseDate)
+	tag.AddTextFrame(tag.CommonID("TRCK"), tag.DefaultEncoding(), strconv.Itoa(track.GetInt("track_number")))
+	tag.AddTextFrame(tag.CommonID("TDRC"), tag.DefaultEncoding(), track.GetString("release_date"))
 
 	// Album art
-	if len(track.Album.Images) > 0 {
-		coverURL := track.Album.Images[0].URL
+	if len(track.GetString("cover_url")) > 0 {
+		coverURL := track.GetString("cover_url")
 		coverPath := filepath.Join(dir, fmt.Sprintf("%s_cover.jpg", fileID))
 		if err := downloadFile(coverURL, coverPath); err == nil {
 			imgBytes, _ := os.ReadFile(coverPath)
@@ -278,7 +276,7 @@ func downloadFile(url, dest string) error {
 //  SAVE RECORD TO POCKETBASE
 // ======================================================================
 
-func saveTrackRecord(app core.App, t *SpotifyTrack, localPath string) (*core.Record, error) {
+func saveTrackRecord(app core.App, t *SpotifyTrack) (*core.Record, error) {
 	col, err := app.FindCollectionByNameOrId("tracks")
 	if err != nil {
 		return nil, err
@@ -287,7 +285,7 @@ func saveTrackRecord(app core.App, t *SpotifyTrack, localPath string) (*core.Rec
 	record := core.NewRecord(col)
 
 	record.Set("spotify_track_id", t.ID)
-	record.Set("title", t.Name)
+	record.Set("name", t.Name)
 	record.Set("album", t.Album.Name)
 
 	artistNames := []string{}
@@ -295,15 +293,46 @@ func saveTrackRecord(app core.App, t *SpotifyTrack, localPath string) (*core.Rec
 		artistNames = append(artistNames, a.Name)
 	}
 	record.Set("artist", strings.Join(artistNames, ", "))
-
 	record.Set("duration", t.DurationMs)
 
+	record.Set("release_date", t.Album.ReleaseDate)
+	record.Set("track_number", t.TrackNumber)
+
+	if len(t.Album.Images) > 0 {
+		record.Set("cover_url", t.Album.Images[0].URL)
+	}
+
+	if err := app.Save(record); err != nil {
+		return nil, err
+	}
+
+	return record, nil
+}
+
+func updateTrackRecord(app core.App, track *core.Record, localPath string) (*core.Record, error) {
 	file, err := filesystem.NewFileFromPath(localPath)
 	if err != nil {
 		return nil, err
 	}
 
-	record.Set("file", file) // field name must match your schema
+	track.Set("file", file) // field name must match your schema
+	if err := app.Save(track); err != nil {
+		return nil, err
+	}
+
+	return track, nil
+}
+
+func saveQueuedTrackRecord(app core.App, track *core.Record) (*core.Record, error) {
+	col, err := app.FindCollectionByNameOrId("queued_tracks")
+	if err != nil {
+		return nil, err
+	}
+
+	record := core.NewRecord(col)
+
+	record.Set("track_id", track.Id)
+	record.Set("status", "queued")
 
 	if err := app.Save(record); err != nil {
 		return nil, err
