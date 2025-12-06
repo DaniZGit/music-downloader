@@ -31,7 +31,7 @@ RUN apk add --no-cache \
 
 RUN pip install yt-dlp --break-system-packages
 
-COPY pb_migrations /pb/pb_migrations
+# COPY migrations /pb/migrations
 COPY pb_hooks /pb/pb_hooks
 
 COPY --from=builder /app/pocketbase /pb/pocketbase

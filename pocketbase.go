@@ -12,12 +12,25 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/plugins/migratecmd"
+
+	// For migrations to be auto run
+	_ "api.groovio/migrations"
 )
 
 var downloadSemaphore = make(chan struct{}, 2)
 
 func main() {
 	app := pocketbase.New()
+
+	// Detect if invoked via "go run .", so automigrate only runs in dev.
+	isGoRun := strings.HasPrefix(os.Args[0], os.TempDir())
+
+	// Register the migrate plugin. This adds the "migrate" subcommands to the CLI.
+	// Automigrate: when true, changes from Dashboard will auto-generate migration files.
+	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
+		Automigrate: isGoRun,
+	})
 
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
 
@@ -163,6 +176,43 @@ func main() {
 			}
 			
 			return nil
+		})
+
+		// 4. Expose endpoint for checking if tracks audio exist
+		se.Router.POST("/api/check-tracks", func(e *core.RequestEvent) error {
+			var payload struct{
+				TrackIDs []string `json:"track_ids"`
+			}
+			if err := e.BindBody(&payload); err != nil {
+				return e.JSON(http.StatusBadRequest, map[string]string{
+					"error": "Invalid request body: " + err.Error(),
+				})
+			}
+
+			// Fetch tracks
+			tracks, err := app.FindRecordsByIds("tracks", payload.TrackIDs)
+			if err != nil {
+				return e.JSON(http.StatusBadRequest, map[string]string{
+					"error": "Failed to retrieve tracks: " + err.Error(),
+				})
+			}
+
+			// Map tracks to id <-> audio_exists
+			mappedTracks := make(map[string]bool)
+			for _, id := range payload.TrackIDs {
+					mappedTracks[id] = false // default
+			}
+
+			for _, track := range tracks {
+					file := track.GetString("file")
+					if file != "" {
+							mappedTracks[track.Id] = true
+					}
+			}
+
+			return e.JSON(http.StatusOK, map[string]any{
+				"tracks": mappedTracks,
+			})
 		})
 
 		// Serve static files from pb_public
