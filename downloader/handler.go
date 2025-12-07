@@ -70,24 +70,13 @@ func QueueTrack(app core.App, payload DownloadRequest) (*core.Record, error) {
 		return nil, fmt.Errorf("track save error: %w", err)
 	}
 
-	// Create queued_track record
-	queuedTrack, err := saveQueuedTrackRecord(app, track)
-	if err != nil {
-		return nil, fmt.Errorf("queued track save error: %w", err)
-	}
-
-	return queuedTrack, nil
+	return track, nil
 }
 
 // ======================================================================
 // MAIN HANDLER ENTRY
 // ======================================================================
 func DownloadTrack(app core.App, track *core.Record) (*core.Record, error) {
-	// Make sure track is not nil
-	if track == nil {
-			return nil, errors.New("track record is nil")
-	}
-
 	// Download from youtube
 	downloadDir := "./downloads"
 	os.MkdirAll(downloadDir, os.ModePerm)
@@ -283,7 +272,9 @@ func saveTrackRecord(app core.App, t *SpotifyTrack) (*core.Record, error) {
 	}
 
 	record := core.NewRecord(col)
+	record.Set("download_status", "queued");
 
+	// Spotify data
 	record.Set("spotify_track_id", t.ID)
 	record.Set("name", t.Name)
 	record.Set("album", t.Album.Name)
@@ -321,22 +312,4 @@ func updateTrackRecord(app core.App, track *core.Record, localPath string) (*cor
 	}
 
 	return track, nil
-}
-
-func saveQueuedTrackRecord(app core.App, track *core.Record) (*core.Record, error) {
-	col, err := app.FindCollectionByNameOrId("queued_tracks")
-	if err != nil {
-		return nil, err
-	}
-
-	record := core.NewRecord(col)
-
-	record.Set("track_id", track.Id)
-	record.Set("status", "queued")
-
-	if err := app.Save(record); err != nil {
-		return nil, err
-	}
-
-	return record, nil
 }

@@ -56,7 +56,7 @@ func main() {
 				
 				// Optional: You could implement a webhook or a live-update mechanism (like websockets)
 				// to notify the client when the record (and file) is ready.
-				log.Printf("Track was succesfully added to the queue. Queue record ID: %s", record.Id)
+				log.Printf("Track was succesfully added to the queue. Track ID: %s", record.Id)
 			}()
 
 			// Return an immediate success response indicating the job started.
@@ -67,10 +67,10 @@ func main() {
 
 		// 2. Register cron job for downloading queued tracks
 		app.Cron().MustAdd("queue_worker", "*/1 * * * *", func() {
-			// Find queued jobs
-			jobs, err := app.FindRecordsByFilter(
-				"queued_tracks",
-				"status='queued' && track_id!=null",
+			// Find queued tracks
+			tracks, err := app.FindRecordsByFilter(
+				"tracks",
+				"download_status='queued'",
 				"-created",
 				cap(downloadSemaphore),
 				0,
@@ -80,35 +80,29 @@ func main() {
 				return
 			}
 
-			for _, job := range jobs {
+			for _, track := range tracks {
 				// mark job as downloading
-				job.Set("status", "downloading")
-				app.Save(job)
+				track.Set("download_status", "downloading")
+				app.Save(track)
 
 				// fire worker
-				go func(job *core.Record) {
+				go func(track *core.Record) {
 					downloadSemaphore <- struct{}{} // acquire slot
 					defer func() { <-downloadSemaphore }() // release slot
 
-					errs := app.ExpandRecord(job, []string{"track_id"}, nil)
-					if len(errs) > 0 {
-						fmt.Printf("failed to expand queue job: %v", errs)
-						return;
-					}
-
-					_, err = downloader.DownloadTrack(app, job.ExpandedOne("track_id"))
+					_, err = downloader.DownloadTrack(app, track)
 					if err != nil {
-						job.Set("status", "failed")
+						track.Set("download_status", "failed")
 						fmt.Printf("Failed to download track %s", err.Error())
 					} else {
-						job.Set("status", "completed")
+						track.Set("download_status", "completed")
 					}
 
-					if err := app.Save(job); err != nil {
-						log.Println("Failed to update queue item:", err)
+					if err := app.Save(track); err != nil {
+						log.Println("Failed to update queued track status:", err)
 					}
 
-				}(job)
+				}(track)
 			}
 		})
 
@@ -206,17 +200,17 @@ func main() {
 					params,
 			)
 
-			// Map tracks to id <-> audio_exists
-			mappedTracks := make(map[string]bool)
+			// Map tracks to spotify_track_id <-> download_status
+			mappedTracks := make(map[string]string)
 			for _, id := range trackIds {
-					mappedTracks[strings.TrimSpace(id)] = false // default
+					mappedTracks[strings.TrimSpace(id)] = "failed" // default
 			}
 
 			for _, track := range tracks {
-					file := track.GetString("file")
-					if file != "" {
+					status := track.GetString("download_status")
+					if status != "" {
 							spotifyTrackId := track.GetString("spotify_track_id")
-							mappedTracks[spotifyTrackId] = true
+							mappedTracks[spotifyTrackId] = status
 					}
 			}
 
