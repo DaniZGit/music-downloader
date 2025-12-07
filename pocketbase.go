@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"api.groovio/downloader"
@@ -108,70 +109,116 @@ func main() {
 
 		// 3. Expose endpoint for playing/download tracks
 		se.Router.GET("/api/play-track/{spotifyTrackId}", func(e *core.RequestEvent) error {
-			// 1. Get the Spotify ID from the URL path
 			spotifyTrackId := e.Request.PathValue("spotifyTrackId")
 			if spotifyTrackId == "" {
-					return e.JSON(http.StatusBadRequest, map[string]string{
-						"error": "Missing spotifyTrackId parameter",
-					})
+				return e.JSON(http.StatusBadRequest, map[string]string{"error": "Missing spotifyTrackId"})
 			}
-		
+
 			record, err := app.FindFirstRecordByData("tracks", "spotify_track_id", spotifyTrackId)
 			if err != nil {
-				return e.JSON(http.StatusBadRequest, map[string]string{
-					"error": "Track doesn't exist",
-				})
+				return e.JSON(http.StatusNotFound, "Track not found")
 			}
 
 			fileName := record.GetString("file")
 			if fileName == "" {
-					return e.JSON(http.StatusNotFound, map[string]string{
-							"error": "Track file not available",
-					})
+				return e.JSON(http.StatusNotFound, "Track file not available")
 			}
 
-			fileURL := record.BaseFilesPath() + "/" + fileName + "?download=1"
+			key := record.BaseFilesPath() + "/" + fileName
 
-			 // 3. Open the filesystem
 			fsys, err := app.NewFilesystem()
 			if err != nil {
-					return e.JSON(http.StatusInternalServerError, map[string]string{
-							"error": "Failed to open filesystem: " + err.Error(),
-					})
+				return e.JSON(http.StatusInternalServerError, "Failed to initialize filesystem")
 			}
 			defer fsys.Close()
 
-			// 4. Get a reader for the file
-			reader, err := fsys.GetReader(fileURL)
+			// get file size
+			stat, err := fsys.Attributes(key)
 			if err != nil {
-					return e.JSON(http.StatusNotFound, map[string]string{
-							"error": "File not found",
-					})
+				return e.JSON(http.StatusNotFound, "File not found")
+			}
+			fileSize := stat.Size
+
+			// Get reader (seekable)
+			reader, err := fsys.GetReader(key)
+			if err != nil {
+				return e.JSON(http.StatusNotFound, "File not found")
 			}
 			defer reader.Close()
 
-			// 5. Set the correct content type (for mp3 audio)
-			e.Response.Header().Set("Content-Type", "audio/mpeg")
+			rangeHeader := e.Request.Header.Get("Range")
 
-			// 6. Check for download query
-			download := e.Request.URL.Query().Get("download")
-			if download == "1" {
-					e.Response.Header().Set("Content-Disposition", "attachment; filename=\""+fileName+"\"")
-			}
-
-			// 7. Stream the file directly to the response
-			_, err = io.Copy(e.Response, reader)
-			if err != nil {
-					if !strings.Contains(err.Error(), "broken pipe") {
-							return e.JSON(http.StatusInternalServerError, map[string]string{
-									"error": "Failed to stream file: " + err.Error(),
-							})
+			if rangeHeader != "" {
+					if !strings.HasPrefix(rangeHeader, "bytes=") {
+							return e.JSON(http.StatusBadRequest, "Invalid Range header")
 					}
-					// else: client disconnected, ignore
+
+					// Strip "bytes="
+					byteRange := strings.TrimPrefix(rangeHeader, "bytes=")
+
+					// Support only single ranges (Chrome sometimes tries multiple)
+					if strings.Contains(byteRange, ",") {
+							// respond with full file (most players accept this)
+							byteRange = strings.Split(byteRange, ",")[0]
+					}
+
+					parts := strings.Split(byteRange, "-")
+					if len(parts) != 2 {
+							return e.JSON(http.StatusBadRequest, "Invalid Range format")
+					}
+
+					// Parse start
+					start, err := strconv.ParseInt(parts[0], 10, 64)
+					if err != nil {
+							start = 0
+					}
+
+					// Parse end (optional)
+					var end int64
+					if parts[1] == "" { // bytes=start-
+							end = fileSize - 1
+					} else {
+							end, err = strconv.ParseInt(parts[1], 10, 64)
+							if err != nil || end >= fileSize {
+									end = fileSize - 1
+							}
+					}
+
+					if start < 0 || start >= fileSize {
+							return e.JSON(http.StatusRequestedRangeNotSatisfiable, "Invalid Range start")
+					}
+
+					chunkSize := end - start + 1
+					if chunkSize < 1 {
+							return e.JSON(http.StatusRequestedRangeNotSatisfiable, "Invalid Range")
+					}
+
+					// Seek
+					_, err = reader.Seek(start, io.SeekStart)
+					if err != nil {
+							return e.JSON(500, "Seek failed")
+					}
+
+					// Headers
+					e.Response.Header().Set("Content-Type", "audio/mpeg")
+					e.Response.Header().Set("Accept-Ranges", "bytes")
+					e.Response.Header().Set("Content-Length", fmt.Sprintf("%d", chunkSize))
+					e.Response.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, fileSize))
+
+					e.Response.WriteHeader(206)
+
+					_, err = io.CopyN(e.Response, reader, chunkSize)
+					return err
 			}
-			
-			return nil
+			// No Range header → full file
+			e.Response.Header().Set("Content-Type", "audio/mpeg")
+			e.Response.Header().Set("Content-Length", fmt.Sprintf("%d", fileSize))
+			e.Response.Header().Set("Accept-Ranges", "bytes")
+
+			_, err = io.Copy(e.Response, reader)
+			return err
 		})
+
 
 		// 4. Expose endpoint for checking if tracks audio exist
 		se.Router.GET("/api/check-tracks", func(e *core.RequestEvent) error {
