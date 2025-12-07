@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"api.groovio/downloader"
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
@@ -183,24 +184,39 @@ func main() {
 			trackIdsQuery := e.Request.URL.Query().Get("ids")
 			trackIds := strings.Split(trackIdsQuery, ",")
 
-			// Fetch tracks
-			tracks, err := app.FindRecordsByIds("tracks", trackIds)
-			if err != nil {
-				return e.JSON(http.StatusBadRequest, map[string]string{
-					"error": "Failed to retrieve tracks: " + err.Error(),
-				})
+			// Build filter
+			filters := make([]string, len(trackIds))
+			params := make(dbx.Params)
+			for i, id := range trackIds {
+					key := fmt.Sprintf("id%d", i)
+					filters[i] = "spotify_track_id = {:" + key + "}"
+					params[key] = strings.TrimSpace(id)
 			}
+
+			// Seperate filters with OR operator
+			filter := strings.Join(filters, " || ")
+
+			// Fetch tracks
+			tracks, _ := app.FindRecordsByFilter(
+					"tracks",    // collection
+					filter,      // filter string
+					"",          // sort
+					0,           // limit 0 = no limit
+					0,           // offset
+					params,
+			)
 
 			// Map tracks to id <-> audio_exists
 			mappedTracks := make(map[string]bool)
 			for _, id := range trackIds {
-					mappedTracks[id] = false // default
+					mappedTracks[strings.TrimSpace(id)] = false // default
 			}
 
 			for _, track := range tracks {
 					file := track.GetString("file")
 					if file != "" {
-							mappedTracks[track.Id] = true
+							spotifyTrackId := track.GetString("spotify_track_id")
+							mappedTracks[spotifyTrackId] = true
 					}
 			}
 
