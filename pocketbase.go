@@ -214,9 +214,7 @@ func main() {
 					}
 			}
 
-			return e.JSON(http.StatusOK, map[string]any{
-				"tracks": mappedTracks,
-			})
+			return e.JSON(http.StatusOK, mappedTracks)
 		})
 
 		// Serve static files from pb_public
