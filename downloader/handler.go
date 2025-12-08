@@ -244,6 +244,13 @@ func writeID3Tags(track *core.Record, tmpFile, fileID, dir string) error {
 		}
 	}
 
+	// Spotify ID
+	tag.AddUserDefinedTextFrame(id3v2.UserDefinedTextFrame{
+        Encoding:    tag.DefaultEncoding(),
+        Description: "SPOTIFY_ID",
+        Value:       track.GetString("spotify_track_id"),
+	})
+
 	return tag.Save()
 }
 
