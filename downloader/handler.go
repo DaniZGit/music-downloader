@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/bogem/id3v2"
@@ -222,8 +221,12 @@ func writeID3Tags(track *core.Record, tmpFile, fileID, dir string) error {
 	tag.SetArtist(track.GetString("artist"))
 	tag.SetAlbum(track.GetString("album"))
 
-	tag.AddTextFrame(tag.CommonID("TRCK"), tag.DefaultEncoding(), strconv.Itoa(track.GetInt("track_number")))
-	tag.AddTextFrame(tag.CommonID("TDRC"), tag.DefaultEncoding(), track.GetString("release_date"))
+	fullDate := track.GetString("release_date") // "2021-08-23"
+	year := ""
+	if len(fullDate) >= 4 {
+			year = fullDate[:4] // "2021"
+	}
+	tag.SetYear(year)
 
 	// Album art
 	if len(track.GetString("cover_url")) > 0 {
