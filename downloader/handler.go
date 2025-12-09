@@ -25,19 +25,24 @@ type DownloadRequest struct {
 
 // ---- SPOTIFY API MODELS ----
 type SpotifyTrack struct {
+	ID          string `json:"id"`
 	Name        string `json:"name"`
 	DurationMs  int    `json:"duration_ms"`
 	TrackNumber int    `json:"track_number"`
 	DiscNumber  int    `json:"disc_number"`
-	ID          string `json:"id"`
 
 	Artists []struct {
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	} `json:"artists"`
 
 	Album struct {
+		ID          string `json:"id"`
 		Name        string `json:"name"`
 		ReleaseDate string `json:"release_date"`
+		Artists []struct {
+			ID   string `json:"id"`
+		} `json:"artists"`
 		Images      []struct {
 			URL string `json:"url"`
 		} `json:"images"`
@@ -265,11 +270,22 @@ func writeID3Tags(track *core.Record, tmpFile, fileID, dir string) error {
 		}
 	}
 
-	// Spotify ID
+	// Extra data
 	tag.AddUserDefinedTextFrame(id3v2.UserDefinedTextFrame{
         Encoding:    tag.DefaultEncoding(),
         Description: "SPOTIFY_ID",
         Value:       track.GetString("spotify_track_id"),
+	})
+
+	tag.AddUserDefinedTextFrame(id3v2.UserDefinedTextFrame{
+        Encoding:    tag.DefaultEncoding(),
+        Description: "ALBUM_ID",
+        Value:       track.GetString("album_id"),
+	})
+	tag.AddUserDefinedTextFrame(id3v2.UserDefinedTextFrame{
+        Encoding:    tag.DefaultEncoding(),
+        Description: "ARTIST_ID",
+        Value:       track.GetString("artist_id"),
 	})
 
 	return tag.Save()
@@ -305,21 +321,28 @@ func saveTrackRecord(app core.App, t *SpotifyTrack) (*core.Record, error) {
 	record := core.NewRecord(col)
 	record.Set("download_status", "queued");
 
-	// Spotify data
+	// Track data
 	record.Set("spotify_track_id", t.ID)
 	record.Set("name", t.Name)
-	record.Set("album", t.Album.Name)
-
-	artistNames := []string{}
-	for _, a := range t.Artists {
-		artistNames = append(artistNames, a.Name)
-	}
-	record.Set("artist", strings.Join(artistNames, ", "))
 	record.Set("duration", t.DurationMs)
-
 	record.Set("release_date", t.Album.ReleaseDate)
 	record.Set("track_number", t.TrackNumber)
 
+	// Album data
+	record.Set("album", t.Album.Name)
+	record.Set("album_id", t.Album.ID)
+
+	// Artists data
+	artistIds := []string{}
+	artistNames := []string{}
+	for _, a := range t.Artists {
+		artistIds = append(artistIds, a.ID)
+		artistNames = append(artistNames, a.Name)
+	}
+	record.Set("artist_id", strings.Join(artistIds, ", "))
+	record.Set("artist", strings.Join(artistNames, ", "))
+
+	// Cover image
 	if len(t.Album.Images) > 0 {
 		record.Set("cover_url", t.Album.Images[0].URL)
 	}
