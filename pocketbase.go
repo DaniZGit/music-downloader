@@ -103,6 +103,7 @@ func main() {
 						log.Println("Failed to update queued track status:", err)
 					}
 
+					app.Save(track)
 				}(track)
 			}
 		})
@@ -249,10 +250,6 @@ func main() {
 
 			// Map tracks to spotify_track_id <-> download_status
 			mappedTracks := make(map[string]string)
-			for _, id := range trackIds {
-					mappedTracks[strings.TrimSpace(id)] = "failed" // default
-			}
-
 			for _, track := range tracks {
 					status := track.GetString("download_status")
 					if status != "" {

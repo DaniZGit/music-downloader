@@ -50,9 +50,18 @@ func QueueTrack(app core.App, payload DownloadRequest) (*core.Record, error) {
 	}
 
 	// Check if track already exists - so we dont create duplicate requests
-	_, err := app.FindFirstRecordByData("tracks", "spotify_track_id", payload.SpotifyTrackID)
+	existingTrack, err := app.FindFirstRecordByData("tracks", "spotify_track_id", payload.SpotifyTrackID)
 	if err == nil {
-		return nil, errors.New("track with provided spotify_track_id is already downloaded and ready to play")
+		// Check if track failed the download
+		if existingTrack.GetString("download_status") == "failed" {
+			// Retry the download process
+			existingTrack.Set("download_status", "queued");
+			app.Save(existingTrack)
+			return existingTrack, nil;
+		}
+
+		// Track was/is already succesfully download-ed/ing
+		return nil, errors.New("track with provided spotify_track_id was/is already download-ed/ing")
 	}
 
 	// Get track metadata from Spotify
@@ -88,7 +97,17 @@ func DownloadTrack(app core.App, track *core.Record) (*core.Record, error) {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("yt-dlp failed: %w", err)
+		if exitErr, ok := err.(*exec.ExitError); ok {
+        // Exit code 101 means "Max downloads reached", which is a SUCCESS for us
+        if exitErr.ExitCode() == 101 {
+            err = nil 
+        }
+    }
+
+    // If err is still not nil (meaning it's a real error, like 1 or 255), handle it
+    if err != nil {
+			return nil, fmt.Errorf("yt-dlp failed: %w", err)
+    }
 	}
 
 	// Apply ID3 tags
@@ -177,19 +196,21 @@ func getSpotifyToken() (string, error) {
 // ======================================================================
 
 func createYTDLPCommand(track *core.Record, tmpFile string) *exec.Cmd {
-	search := fmt.Sprintf("%s %s", cleanTrackName(track.GetString("name")), track.GetString("artist"))
+	search := fmt.Sprintf("%s %s official audio", track.GetString("artist"), cleanTrackName(track.GetString("name")))
 
 	desired := track.GetInt("duration") / 1000
-	min := desired - 5
+	min := desired - 60
 	max := desired + 5
 
 	return exec.Command("yt-dlp",
 		"--extract-audio",
 		"--audio-format", "mp3",
+		"--audio-quality", "0",
 		"--output", tmpFile,
 		"--format", "bestaudio/best",
 		"--no-playlist",
 		"--match-filter", fmt.Sprintf("duration>%d & duration<%d", min, max),
+		"--max-downloads", "1",
 		fmt.Sprintf("ytsearch10:%s", search),
 	)
 }
